@@ -66,13 +66,13 @@ OpenObserve не заменит специализированные систе�
 
 ### Шаг 1. Бакет в Yandex Object Storage
 
-Бакет (например, `my-openobserve-bucket`) и static access key создаются Terraform'ом (`openobserve.tf`): сервисный аккаунт с ролью `storage.editor` и static access key, креды подставляются в сгенерированный `values.yaml`. Хранить данные Observability в объектном хранилище — и есть главный источник экономии: холодные Parquet-файлы не занимают ни PV, ни RAM.
+Создайте S3-бакет. Имя бакета и креды поместите `values.yaml` (`ZO_S3_BUCKET_NAME`, `ZO_S3_ACCESS_KEY`, `ZO_S3_SECRET_KEY`). Хранить данные Observability в объектном хранилище — и есть главный источник экономии: холодные Parquet-файлы не занимают ни PV, ни RAM.
 
 ### Шаг 2. Postgres: Yandex Managed Service for PostgreSQL
 
 Кластерный чарт использует Postgres как метаданные-стор. Вместо разворачивания CloudNativePG-кластера в Kubernetes (оператор, PVC, бэкапы — всё на вас) возьмём managed-вариант: master и реплики обслуживает Yandex Cloud.
 
-Кластер создаётся Terraform'ом (`postgres.tf`): HA-топология из 3 хостов (primary + 2 реплики, по одной в каждой зоне отказоустойчивости), PostgreSQL 17, пользователь `openobserve` и база `app`. Никакого `kubectl apply` для оператора не требуется — шаг полностью автоматизирован.
+Создайте PostgreSQL 17 кластер из 3 хостов (primary + 2 реплики, по одной в каждой зоне отказоустойчивости), пользователь `openobserve` и база `app`.
 
 Как OpenObserve подключается к БД: в `values.yaml` отключаем встроенный Postgres чарта и задаём DSN напрямую:
 
@@ -92,8 +92,6 @@ auth:
 - **Special FQDN** `c-<cluster_id>.rw.mdb.yandexcloud.net` всегда указывает на текущего master, `.ro` — на самую свежую реплику. При failover DNS-запись обновляется автоматически (до ~10 минут может вести на старый master — OpenObserve переживает это gracefully через retry)
 - **Порт 6432, а не 5432** — в Managed PostgreSQL подключение идёт через встроенный connection pooler (Odyssey)
 - **`sslmode=disable`** — хосты БД без публичного IP, поды OpenObserve ходят в них по внутренней cloud-сети, где шифрование не требуется; security group кластера пропускает 6432 только из подсетей с нодами K8s
-
-Если кластера ещё нет — `terraform apply` создаст всё; ID кластера БД доступен в output'е `postgres_cluster_id`.
 
 ### Шаг 3. Добавляем Helm-репозиторий
 
