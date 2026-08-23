@@ -13,7 +13,8 @@ resource "yandex_mdb_postgresql_cluster" "openobserve" {
     version = "17"
 
     resources {
-      resource_preset_id = "s2.micro" # 2 vCPU / 8 GiB — достаточно для метаданных OpenObserve
+      # В зоне ru-central1-e доступны только пресеты c3-*/m3-*/s3-* (s2.* — только a/b/d)
+      resource_preset_id = "s3-c2-m8" # 2 vCPU / 8 GiB — достаточно для метаданных OpenObserve
       disk_type_id       = "network-ssd"
       disk_size          = 10 # GiB на хост
     }
