@@ -4,7 +4,7 @@
 
 У каждой команды рано или поздно наступает момент, когда `kubectl logs` перестаёт хватать: логи размазаны по нодам и исчезают вместе с подами, метрики живут в Prometheus без истории, трейсы вообще никто не настроил, а дашборды для Grafana надо собирать из трёх разных источников. Классический путь — Elasticsearch + Kibana + Prometheus + Tempo + Grafana — превращается в зоопарк из полудюжины систем, каждая со своим языком запросов, хранилищем и режимом отказов. Коммерческая альтернатива (Datadog, Splunk, New Relic) решает проблему комплексно, но ценой проприетарного vendor lock-in и счёта, растущего быстрее, чем инфраструктура.
 
-[OpenObserve](https://github.com/openobserve/openobserve) — open-source платформа наблюдаемости, написанная на Rust: логи, метрики, трейсы, RUM, дашборды, алерты, инциденты, пайплайны и AI-обсервабельность в едином бинарнике. Данные хранятся в колоночном формате Parquet поверх S3-совместимого объектного хранилища — по заявлениям авторов это до **140x** дешевле Elasticsearch по storage-затратам. OpenTelemetry-native: OTLP-инжест из коробки, никакого собственного языка запросов — только SQL и PromQL. Крупнейшее известное развёртывание — 2+ PB/день инжеста.
+[OpenObserve](https://github.com/openobserve/openobserve) — open-source платформа наблюдаемости, написанная на Rust: логи, метрики, трейсы, RUM, дашборды, алерты, инциденты, пайплайны и AI-обсервабельность в едином бинарнике. Данные хранятся в колоночном формате Parquet поверх S3-совместимого объектного хранилища — по заявлениям авторов это до **140x** дешевле Elasticsearch по storage-затратам. OpenTelemetry-native: OTLP-инжест из коробки, никакого собственного языка запросов — только SQL и PromQL.
 
 В этой статье мы развернём OpenObserve в HA-конфигурации в Yandex Managed Kubernetes через Helm — с Postgres (Yandex Managed Service for PostgreSQL), NATS, хранилищем в Yandex Object Storage, ingress-nginx и доменом из публичного IP — а затем подключим `openobserve-collector`, чтобы кластер начал наблюдать сам за собой: логи, метрики, события и state всех Kubernetes-объектов.
 
@@ -38,48 +38,7 @@ OpenObserve не заменит специализированные систе�
 
 > Предполагается, что у вас уже есть работающий кластер Yandex Managed Kubernetes с установленным ingress-nginx. Как его поставить через Terraform — см. репозиторий проекта (`.tf`-файлы): `terraform apply` поднимает VPC с NAT-шлюзом, кластер, ingress-nginx и кластер Managed PostgreSQL, и генерирует `values.yaml` / `collector-values.yaml`. Нужен [yc CLI](https://yandex.cloud/ru/docs/cli/quickstart) с настроенным профилем и переменные: `folder_id`, `openobserve_root_user_email`, `openobserve_root_user_password`, `openobserve_postgres_password`, `openobserve_s3_bucket_name`.
 
-## Часть 1. Локальный запуск за 2 минуты
-
-Прежде чем разворачивать HA-кластер, полезно пощупать OpenObserve локально. Один Docker-контейнер — и у вас полноценная платформа с UI:
-
-```bash
-docker run -d \
-  --name openobserve \
-  -v $PWD/data:/data \
-  -p 5080:5080 \
-  -e ZO_ROOT_USER_EMAIL="root@example.com" \
-  -e ZO_ROOT_USER_PASSWORD="Complexpass#123" \
-  public.ecr.aws/zinclabs/openobserve:latest
-```
-
-Открываем [http://localhost:5080](http://localhost:5080), входим с указанными credentials — и оказываемся в UI: домашний дашборд, логи, метрики, трейсы, пайплайны. В этом режиме данные пишутся на локальный диск (`ZO_LOCAL_MODE_STORAGE=disk`), метаданные — в SQLite. Ничего настраивать не нужно.
-
-Сразу проверим инжест — отправим пару JSON-логов через HTTP API:
-
-```bash
-curl -s http://localhost:5080/api/default/my_stream/_json \
-  -u "root@example.com:Complexpass#123" \
-  -H "Content-Type: application/json" \
-  -d '[{"level":"info","message":"hello from curl","service":"demo"}]'
-```
-
-Открываем в UI **Logs** → стрим `my_stream` — записи уже там. Это весь процесс: любой JSON, POST на `/{org}/{stream}/_json` — и данные наблюдаемы.
-
-Кроме Docker есть готовые бинарники под linux/darwin/windows (amd64/arm64):
-
-```bash
-# OSS-сборка (укажите версию, например v0.92.2; latest см. на странице релизов GitHub)
-curl -fLo o2.tar.gz \
-  "https://downloads.openobserve.ai/releases/openobserve/v0.92.2/openobserve-v0.92.2-linux-amd64.tar.gz"
-tar -xzf o2.tar.gz && ./openobserve
-
-# Enterprise-сборка
-curl -fsSL https://raw.githubusercontent.com/openobserve/openobserve/main/downloadO2.sh | bash
-```
-
-Для продакшена такой режим не подходит: нет HA, данные на одном диске. Перейдём к кластерному деплою.
-
-## Часть 2. HA-деплой в Yandex Managed K8s
+## Часть 1. HA-деплой в Yandex Managed K8s
 
 Кластерный режим OpenObserve разделяет монолит на роли, каждая — отдельный deployment/statefulset:
 
@@ -104,22 +63,6 @@ curl -fsSL https://raw.githubusercontent.com/openobserve/openobserve/main/downlo
 ```
 
 Ноды stateless (кроме WAL/кэша на PVC), поэтому масштабирование горизонтальное, а отказоустойчивость данных гарантирует S3 с его 11 девятками durability.
-
-### Шаг 0. Домен из публичного IP — sslip.io
-
-Если DNS-зона в Yandex Cloud не настроена, удобнее всего сервис sslip.io: домен формируется прямо из публичного IP балансировщика ingress-контроллера. Terraform уже сделал это за вас — FQDN вида `openobserve.<публичный-IP>.sslip.io` доступен в output'е `openobserve_fqdn` и подставлен в сгенерированный `values.yaml`:
-
-```bash
-terraform output openobserve_fqdn
-```
-
-Или вручную:
-
-```bash
-# Публичный IP ingress-контроллера
-kubectl get svc -n ingress-nginx ingress-nginx-controller \
-  -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-```
 
 ### Шаг 1. Бакет в Yandex Object Storage
 
