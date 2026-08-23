@@ -52,14 +52,22 @@ OpenObserve не заменит специализированные систе�
 
 Архитектура получается такая:
 
-```
-                         ┌────────────► NATS (координация, очередь)
-                         │
-Браузер ──HTTPS──► ingress-nginx ──► Router ──► Ingester ──Parquet──► Yandex Object Storage
- OTLP-агенты ──OTLP──►     Router ──► Querier ◄────S3────────────────────────┘
-                         │              │
-                         │         Postgres (Yandex Managed PostgreSQL: метаданные)
-                         └────────────► Compactor (мердж + retention)
+```mermaid
+flowchart LR
+    Browser["Браузер"] -->|HTTPS| Ingress["ingress-nginx"]
+    Agents["OTLP-агенты"] -->|OTLP| Router["Router"]
+    Ingress --> Router
+
+    Router --> Ingester["Ingester"]
+    Router --> Querier["Querier"]
+    Router --> NATS["NATS<br/>(координация, очередь)"]
+    Router --> Compactor["Compactor<br/>(мердж + retention)"]
+
+    Ingester -->|Parquet| S3[("Yandex Object Storage")]
+    S3 --> Querier
+    Compactor --> S3
+
+    Querier --- PG[("Postgres<br/>Yandex Managed PostgreSQL<br/>(метаданные)")]
 ```
 
 Ноды stateless (кроме WAL/кэша на PVC), поэтому масштабирование горизонтальное, а отказоустойчивость данных гарантирует S3 с его 11 девятками durability.
