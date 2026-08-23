@@ -65,8 +65,9 @@ resource "yandex_kubernetes_cluster" "openobserve" {
   ]
 }
 
-# Группа узлов для Kubernetes-кластера (HA-стек OpenObserve: 5 ролей + Postgres x2 + NATS x3,
-# плюс agent-коллектор как DaemonSet на каждой ноде — поэтому 3 ноды, по одной на зону)
+# Группа узлов для Kubernetes-кластера (HA-стек OpenObserve: 5 ролей + NATS x3,
+# плюс agent-коллектор как DaemonSet на каждой ноде — поэтому 3 ноды, по одной на зону;
+# Postgres вынесен в Yandex Managed Service for PostgreSQL, см. postgres.tf)
 resource "yandex_kubernetes_node_group" "k8s_node_group" {
   description = "Node group for the Managed Service for Kubernetes cluster"
   name        = "openobserve-node-group"

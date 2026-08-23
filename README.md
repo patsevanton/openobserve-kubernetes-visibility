@@ -6,7 +6,7 @@
 
 [OpenObserve](https://github.com/openobserve/openobserve) — open-source платформа наблюдаемости, написанная на Rust: логи, метрики, трейсы, RUM, дашборды, алерты, инциденты, пайплайны и AI-обсервабельность в едином бинарнике. Данные хранятся в колоночном формате Parquet поверх S3-совместимого объектного хранилища — по заявлениям авторов это до **140x** дешевле Elasticsearch по storage-затратам. OpenTelemetry-native: OTLP-инжест из коробки, никакого собственного языка запросов — только SQL и PromQL. Крупнейшее известное развёртывание — 2+ PB/день инжеста.
 
-В этой статье мы развернём OpenObserve в HA-конфигурации в Yandex Managed Kubernetes через Helm — с Postgres (CloudNativePG), NATS, хранилищем в Yandex Object Storage, ingress-nginx и доменом из публичного IP — а затем подключим `openobserve-collector`, чтобы кластер начал наблюдать сам за собой: логи, метрики, события и state всех Kubernetes-объектов.
+В этой статье мы развернём OpenObserve в HA-конфигурации в Yandex Managed Kubernetes через Helm — с Postgres (Yandex Managed Service for PostgreSQL), NATS, хранилищем в Yandex Object Storage, ingress-nginx и доменом из публичного IP — а затем подключим `openobserve-collector`, чтобы кластер начал наблюдать сам за собой: логи, метрики, события и state всех Kubernetes-объектов.
 
 ## OpenObserve vs Elasticsearch vs Loki+Grafana vs Datadog
 
@@ -36,7 +36,7 @@ OpenObserve не заменит специализированные систе�
 - **SQL для всего** — логи, трейсы и даже метрики можно запросить через SQL (или PromQL)
 - **Native multi-tenancy** — организации и потоки как первоклассные концепты
 
-> Предполагается, что у вас уже есть работающий кластер Yandex Managed Kubernetes с установленным ingress-nginx. Как его поставить через Terraform — см. репозиторий проекта (`.tf`-файлы): `terraform apply` поднимает VPC с NAT-шлюзом, кластер и ingress-nginx и генерирует `values.yaml` / `collector-values.yaml`. Нужен [yc CLI](https://yandex.cloud/ru/docs/cli/quickstart) с настроенным профилем и переменные: `folder_id`, `openobserve_root_user_email`, `openobserve_root_user_password`, `openobserve_s3_bucket_name`.
+> Предполагается, что у вас уже есть работающий кластер Yandex Managed Kubernetes с установленным ingress-nginx. Как его поставить через Terraform — см. репозиторий проекта (`.tf`-файлы): `terraform apply` поднимает VPC с NAT-шлюзом, кластер, ingress-nginx и кластер Managed PostgreSQL, и генерирует `values.yaml` / `collector-values.yaml`. Нужен [yc CLI](https://yandex.cloud/ru/docs/cli/quickstart) с настроенным профилем и переменные: `folder_id`, `openobserve_root_user_email`, `openobserve_root_user_password`, `openobserve_postgres_password`, `openobserve_s3_bucket_name`.
 
 ## Часть 1. Локальный запуск за 2 минуты
 
@@ -94,13 +94,13 @@ curl -fsSL https://raw.githubusercontent.com/openobserve/openobserve/main/downlo
 Архитектура получается такая:
 
 ```
-                        ┌────────────► NATS (координация, очередь)
-                        │
+                         ┌────────────► NATS (координация, очередь)
+                         │
 Браузер ──HTTPS──► ingress-nginx ──► Router ──► Ingester ──Parquet──► Yandex Object Storage
-OTLP-агенты ──OTLP──►     Router ──► Querier ◄────S3────────────────────────┘
-                        │              │
-                        │         Postgres (CloudNativePG: метаданные)
-                        └────────────► Compactor (мердж + retention)
+ OTLP-агенты ──OTLP──►     Router ──► Querier ◄────S3────────────────────────┘
+                         │              │
+                         │         Postgres (Yandex Managed PostgreSQL: метаданные)
+                         └────────────► Compactor (мердж + retention)
 ```
 
 Ноды stateless (кроме WAL/кэша на PVC), поэтому масштабирование горизонтальное, а отказоустойчивость данных гарантирует S3 с его 11 девятками durability.
@@ -125,14 +125,32 @@ kubectl get svc -n ingress-nginx ingress-nginx-controller \
 
 Бакет (например, `my-openobserve-bucket`) и static access key создаются Terraform'ом (`openobserve.tf`): сервисный аккаунт с ролью `storage.editor` и static access key, креды подставляются в сгенерированный `values.yaml`. Хранить данные Observability в объектном хранилище — и есть главный источник экономии: холодные Parquet-файлы не занимают ни PV, ни RAM.
 
-### Шаг 2. CloudNativePG Operator
+### Шаг 2. Postgres: Yandex Managed Service for PostgreSQL
 
-Кластерный чарт использует Postgres как метаданные-стор и сам создаёт кластер CloudNativePG (1 primary + 1 replica). Сначала нужен оператор:
+Кластерный чарт использует Postgres как метаданные-стор. Вместо разворачивания CloudNativePG-кластера в Kubernetes (оператор, PVC, бэкапы — всё на вас) возьмём managed-вариант: master и реплики обслуживает Yandex Cloud.
 
-```bash
-kubectl apply --server-side -f \
-  https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.30/releases/cnpg-1.30.0.yaml
+Кластер создаётся Terraform'ом (`postgres.tf`): HA-топология из 3 хостов (primary + 2 реплики, по одной в каждой зоне отказоустойчивости), PostgreSQL 17, пользователь `openobserve` и база `app`. Никакого `kubectl apply` для оператора не требуется — шаг полностью автоматизирован.
+
+Как OpenObserve подключается к БД: в `values.yaml` отключаем встроенный Postgres чарта и задаём DSN напрямую:
+
+```yaml
+postgres:
+  enabled: false
+
+auth:
+  # Special FQDN Managed PostgreSQL: .rw — текущий master (запись),
+  # .ro — самая свежая replica (чтение); порт 6432
+  ZO_META_POSTGRES_DSN: "postgres://openobserve:***@c-<cluster_id>.rw.mdb.yandexcloud.net:6432/app?sslmode=disable"
+  ZO_META_POSTGRES_RO_DSN: "postgres://openobserve:***@c-<cluster_id>.ro.mdb.yandexcloud.net:6432/app?sslmode=disable"
 ```
+
+Из нестандартного здесь:
+
+- **Special FQDN** `c-<cluster_id>.rw.mdb.yandexcloud.net` всегда указывает на текущего master, `.ro` — на самую свежую реплику. При failover DNS-запись обновляется автоматически (до ~10 минут может вести на старый master — OpenObserve переживает это gracefully через retry)
+- **Порт 6432, а не 5432** — в Managed PostgreSQL подключение идёт через встроенный connection pooler (Odyssey)
+- **`sslmode=disable`** — хосты БД без публичного IP, поды OpenObserve ходят в них по внутренней cloud-сети, где шифрование не требуется; security group кластера пропускает 6432 только из подсетей с нодами K8s
+
+Если кластера ещё нет — `terraform apply` создаст всё; ID кластера БД доступен в output'е `postgres_cluster_id`.
 
 ### Шаг 3. Добавляем Helm-репозиторий
 
@@ -158,6 +176,9 @@ auth:
   # Static access key Yandex Object Storage
   ZO_S3_ACCESS_KEY: "YCAJExxxxxxxxxxxxxxxxxxxx"
   ZO_S3_SECRET_KEY: "YCPxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  # Managed PostgreSQL: special FQDN .rw (master) и .ro (replica), порт 6432
+  ZO_META_POSTGRES_DSN: "postgres://openobserve:***@c-c9abc123def456.mdb.yandexcloud.net:6432/app?sslmode=disable"
+  ZO_META_POSTGRES_RO_DSN: "postgres://openobserve:***@c-c9abc123def456.mdb.yandexcloud.net:6432/app?sslmode=disable"
 
 config:
   ZO_S3_PROVIDER: "s3"
@@ -173,6 +194,10 @@ enterprise:
 
 # Генерация отчётов в PDF — не нужна в базовом сценарии
 reportserver:
+  enabled: false
+
+# Postgres не в кластере: метаданные-стор — Yandex Managed Service for PostgreSQL
+postgres:
   enabled: false
 
 # Уменьшенные PVC для демо; в проде оставьте 100Gi по умолчанию
@@ -204,6 +229,7 @@ ingress:
 Из нестандартного здесь:
 
 - `ZO_S3_*` — S3-эндпоинт и креды Yandex Object Storage. Провайдер `s3` — стандартный AWS-совместимый путь: Yandex Object Storage говорит по S3 API, отдельного `minio`-режима не требуется
+- `postgres.enabled: false` + `ZO_META_POSTGRES_DSN`/`ZO_META_POSTGRES_RO_DSN` — метаданные-стор вынесен в Yandex Managed Service for PostgreSQL (кластер создаётся Terraform'ом, см. Шаг 2): master и реплики обслуживает облако, бэкапы и failover включены из коробки
 - `enterprise.enabled: false` — чарт по умолчанию ставит enterprise-образ; OSS-режим полностью production-ready, а лишний агрессивный default нас не интересует
 - `ZO_COMPACT_DATA_RETENTION_DAYS: "30"` — retention 30 дней вместо 3650. По умолчанию OpenObserve **никогда ничего не удаляет** — всё иммутабельно, что отлично для compliance, но бакет будет расти бесконечно
 - `ZO_TELEMETRY: "false"` — отключает отправку анонимной статистики использования
@@ -237,8 +263,6 @@ open http://<ваш-fqdn-url>
 NAME                                          READY   STATUS    RESTARTS   AGE
 openobserve-compactor-5f8c9b7d4-x2k9p      1/1     Running   0          5m
 openobserve-ingester-0                     1/1     Running   0          5m
-openobserve-postgres-rw-0                  1/1     Running   0          5m
-openobserve-postgres-ro-1                  1/1     Running   0          4m
 openobserve-querier-0                      1/1     Running   0          5m
 openobserve-router-7d4f6c8b5-j3m2n         1/1     Running   0          5m
 openobserve-scheduler-0                    1/1     Running   0          5m
@@ -246,6 +270,8 @@ openobserve-nats-0                                     1/1     Running   0      
 openobserve-nats-1                                     1/1     Running   0          5m
 openobserve-nats-2                                     1/1     Running   0          5m
 ```
+
+Подов Postgres в namespace нет — кластер БД живёт отдельно в Yandex Managed Service for PostgreSQL (проверить: `yc managed-postgresql cluster list`).
 
 Входим с credentials из `auth.*` — и видим пустой (пока) домашний дашборд. Платформа готова принимать данные.
 
@@ -510,6 +536,7 @@ helm uninstall openobserve-collector -n openobserve-collector
 helm uninstall openobserve -n openobserve
 kubectl delete namespace openobserve-collector openobserve
 # Данные в Object Storage останутся — удалите бакет отдельно, если нужно
+# Кластер Managed PostgreSQL удаляется через terraform destroy (или yc managed-postgresql cluster delete)
 ```
 
 ## Troubleshooting

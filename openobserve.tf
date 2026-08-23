@@ -55,6 +55,8 @@ locals {
     openobserve_s3_access_key      = yandex_iam_service_account_static_access_key.sa_s3_key.access_key
     openobserve_s3_secret_key      = yandex_iam_service_account_static_access_key.sa_s3_key.secret_key
     openobserve_s3_bucket_name     = var.openobserve_s3_bucket_name
+    openobserve_postgres_dsn       = local.postgres_dsn
+    openobserve_postgres_ro_dsn    = local.postgres_ro_dsn
   })
 }
 
