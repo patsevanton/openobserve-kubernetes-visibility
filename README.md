@@ -70,6 +70,8 @@ flowchart LR
     Querier --- PG[("Postgres<br/>Yandex Managed PostgreSQL<br/>(метаданные)")]
 ```
 
+![Архитектура](Архитектура.png)
+
 Ноды stateless (кроме WAL/кэша на PVC), поэтому масштабирование горизонтальное, а отказоустойчивость данных гарантирует S3 с его 11 девятками durability.
 
 ### Шаг 1. Бакет в Yandex Object Storage
