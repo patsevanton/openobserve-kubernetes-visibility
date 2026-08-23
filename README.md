@@ -36,7 +36,7 @@ OpenObserve не заменит специализированные систе�
 - **SQL для всего** — логи, трейсы и даже метрики можно запросить через SQL (или PromQL)
 - **Native multi-tenancy** — организации и потоки как первоклассные концепты
 
-> Предполагается, что у вас уже есть работающий кластер Yandex Managed Kubernetes с установленным ingress-nginx. Как его поставить через Terraform — см. репозиторий проекта (`.tf`-файлы): `terraform apply` поднимает VPC с NAT-шлюзом, кластер, ingress-nginx и кластер Managed PostgreSQL, и генерирует `values.yaml` / `collector-values.yaml`. Нужен [yc CLI](https://yandex.cloud/ru/docs/cli/quickstart) с настроенным профилем и переменные: `folder_id`, `openobserve_root_user_email`, `openobserve_root_user_password`, `openobserve_postgres_password`, `openobserve_s3_bucket_name`.
+> Предполагается, что у вас уже есть работающий кластер Yandex Managed Kubernetes с установленным ingress-nginx и Managed PostgreSQL.
 
 ## Часть 1. HA-деплой в Yandex Managed K8s
 
