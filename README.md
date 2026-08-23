@@ -6,7 +6,7 @@
 
 [OpenObserve](https://github.com/openobserve/openobserve) — open-source платформа наблюдаемости, написанная на Rust: логи, метрики, трейсы, RUM, дашборды, алерты, инциденты, пайплайны и AI-обсервабельность в едином бинарнике. Данные хранятся в колоночном формате Parquet поверх S3-совместимого объектного хранилища — по заявлениям авторов это до **140x** дешевле Elasticsearch по storage-затратам. OpenTelemetry-native: OTLP-инжест из коробки, никакого собственного языка запросов — только SQL и PromQL. Крупнейшее известное развёртывание — 2+ PB/день инжеста.
 
-В этой статье мы развернём OpenObserve в HA-конфигурации в Yandex Managed Kubernetes через Helm — с Postgres (CloudNativePG), NATS, хранилищем в Yandex Object Storage, ingress-nginx, TLS от cert-manager и доменом из публичного IP — а затем подключим `openobserve-collector`, чтобы кластер начал наблюдать сам за собой: логи, метрики, события и state всех Kubernetes-объектов.
+В этой статье мы развернём OpenObserve в HA-конфигурации в Yandex Managed Kubernetes через Helm — с Postgres (CloudNativePG), NATS, хранилищем в Yandex Object Storage, ingress-nginx и доменом из публичного IP — а затем подключим `openobserve-collector`, чтобы кластер начал наблюдать сам за собой: логи, метрики, события и state всех Kubernetes-объектов.
 
 ## OpenObserve vs Elasticsearch vs Loki+Grafana vs Datadog
 
@@ -36,7 +36,7 @@ OpenObserve не заменит специализированные систе�
 - **SQL для всего** — логи, трейсы и даже метрики можно запросить через SQL (или PromQL)
 - **Native multi-tenancy** — организации и потоки как первоклассные концепты
 
-> Предполагается, что у вас уже есть работающий кластер Yandex Managed Kubernetes с установленным ingress-nginx и cert-manager (ClusterIssuer `letsencrypt-prod`), а также созданный бакет в Yandex Object Storage со static access key. Как поставить ingress-nginx и cert-manager — описано в любом базовом гайде по Yandex K8s; статья начинается с работающего кластера.
+> Предполагается, что у вас уже есть работающий кластер Yandex Managed Kubernetes с установленным ingress-nginx. Как его поставить через Terraform — см. репозиторий проекта (`.tf`-файлы): `terraform apply` поднимает VPC с NAT-шлюзом, кластер и ingress-nginx и генерирует `values.yaml` / `collector-values.yaml`. Нужен [yc CLI](https://yandex.cloud/ru/docs/cli/quickstart) с настроенным профилем и переменные: `folder_id`, `openobserve_root_user_email`, `openobserve_root_user_password`, `openobserve_s3_bucket_name`.
 
 ## Часть 1. Локальный запуск за 2 минуты
 
@@ -107,7 +107,13 @@ OTLP-агенты ──OTLP──►     Router ──► Querier ◄───�
 
 ### Шаг 0. Домен из публичного IP — sslip.io
 
-Если DNS-зона в Yandex Cloud не настроена, удобнее всего сервис sslip.io: домен формируется прямо из публичного IP балансировщика ingress-контроллера.
+Если DNS-зона в Yandex Cloud не настроена, удобнее всего сервис sslip.io: домен формируется прямо из публичного IP балансировщика ingress-контроллера. Terraform уже сделал это за вас — FQDN вида `openobserve.<публичный-IP>.sslip.io` доступен в output'е `openobserve_fqdn` и подставлен в сгенерированный `values.yaml`:
+
+```bash
+terraform output openobserve_fqdn
+```
+
+Или вручную:
 
 ```bash
 # Публичный IP ingress-контроллера
@@ -115,15 +121,9 @@ kubectl get svc -n ingress-nginx ingress-nginx-controller \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
 
-Пусть это будет `51.250.10.20` — тогда домен `o2.51-250-10-20.sslip.io` автоматически резолвится в этот IP.
-
-```bash
-export O2_FQDN=o2.51-250-10-20.sslip.io
-```
-
 ### Шаг 1. Бакет в Yandex Object Storage
 
-Создайте бакет (например, `my-o2-bucket`) в Yandex Object Storage и [static access key](https://yandex.cloud/ru/docs/iam/concepts/authorization/access-key) — сервисный аккаунт с ролью на бакет, пара `key_id`/`secret`. Хранить данные Observability в объектном хранилище — и есть главный источник экономии: холодные Parquet-файлы не занимают ни PV, ни RAM.
+Бакет (например, `my-openobserve-bucket`) и static access key создаются Terraform'ом (`openobserve.tf`): сервисный аккаунт с ролью `storage.editor` и static access key, креды подставляются в сгенерированный `values.yaml`. Хранить данные Observability в объектном хранилище — и есть главный источник экономии: холодные Parquet-файлы не занимают ни PV, ни RAM.
 
 ### Шаг 2. CloudNativePG Operator
 
@@ -149,7 +149,7 @@ helm search repo openobserve --versions
 
 ### Шаг 4. values-файл
 
-Файл `values.yaml`:
+Файл `values.yaml` генерируется Terraform'ом из шаблона `values.yaml.tftpl` (домен, креды root-пользователя и static access key S3 подставляются автоматически):
 
 ```yaml
 auth:
@@ -163,7 +163,7 @@ config:
   ZO_S3_PROVIDER: "s3"
   ZO_S3_SERVER_URL: "https://storage.yandexcloud.net"
   ZO_S3_REGION_NAME: "ru-central1"
-  ZO_S3_BUCKET_NAME: "my-o2-bucket"
+  ZO_S3_BUCKET_NAME: "my-openobserve-bucket"
   ZO_COMPACT_DATA_RETENTION_DAYS: "30"
   ZO_TELEMETRY: "false"
 
@@ -194,17 +194,11 @@ scheduler:
 ingress:
   enabled: true
   className: nginx
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
   hosts:
-    - host: o2.51-250-10-20.sslip.io
+    - host: ваш-fqdn-url
       paths:
         - path: /
           pathType: Prefix
-  tls:
-    - secretName: o2-tls
-      hosts:
-        - o2.51-250-10-20.sslip.io
 ```
 
 Из нестандартного здесь:
@@ -213,7 +207,7 @@ ingress:
 - `enterprise.enabled: false` — чарт по умолчанию ставит enterprise-образ; OSS-режим полностью production-ready, а лишний агрессивный default нас не интересует
 - `ZO_COMPACT_DATA_RETENTION_DAYS: "30"` — retention 30 дней вместо 3650. По умолчанию OpenObserve **никогда ничего не удаляет** — всё иммутабельно, что отлично для compliance, но бакет будет расти бесконечно
 - `ZO_TELEMETRY: "false"` — отключает отправку анонимной статистики использования
-- `ingress` — TLS от cert-manager; чарт сам закрывает публичный доступ к `/metrics` через nginx-сайдкар `blocked-metrics` (403 на `/metrics` и `/api/metrics`)
+- `ingress` — домен из sslip.io формируется Terraform'ом из публичного IP балансировщика ingress-nginx; чарт сам закрывает публичный доступ к `/metrics` через nginx-сайдкар `blocked-metrics` (403 на `/metrics` и `/api/metrics`)
 
 Чему соответствуют `ingester/querier/scheduler.persistence` — это WAL и дисковый кэш на PVC, **не** данные. Сами данные — в S3. В продакшене чем больше кэш querier'а, тем меньше повторных чтений из S3 — дефолтные 100Gi разумны.
 
@@ -221,7 +215,7 @@ ingress:
 
 ```bash
 kubectl create namespace openobserve
-helm upgrade --install o2 openobserve/openobserve --version 0.92.2 \
+helm upgrade --install openobserve openobserve/openobserve --version 0.92.2 \
   -n openobserve -f values.yaml
 ```
 
@@ -233,27 +227,24 @@ helm upgrade --install o2 openobserve/openobserve --version 0.92.2 \
 # Ждём готовности всех подов
 kubectl get pods -n openobserve -w
 
-# TLS-сертификат выпущен?
-kubectl get certificate -n openobserve
-
 # Открываем UI
-open https://o2.51-250-10-20.sslip.io
+open http://<ваш-fqdn-url>
 ```
 
 Должно получиться примерно так:
 
 ```
 NAME                                          READY   STATUS    RESTARTS   AGE
-o2-openobserve-compactor-5f8c9b7d4-x2k9p      1/1     Running   0          5m
-o2-openobserve-ingester-0                     1/1     Running   0          5m
-o2-openobserve-postgres-rw-0                  1/1     Running   0          5m
-o2-openobserve-postgres-ro-1                  1/1     Running   0          4m
-o2-openobserve-querier-0                      1/1     Running   0          5m
-o2-openobserve-router-7d4f6c8b5-j3m2n         1/1     Running   0          5m
-o2-openobserve-scheduler-0                    1/1     Running   0          5m
-o2-nats-0                                     1/1     Running   0          5m
-o2-nats-1                                     1/1     Running   0          5m
-o2-nats-2                                     1/1     Running   0          5m
+openobserve-compactor-5f8c9b7d4-x2k9p      1/1     Running   0          5m
+openobserve-ingester-0                     1/1     Running   0          5m
+openobserve-postgres-rw-0                  1/1     Running   0          5m
+openobserve-postgres-ro-1                  1/1     Running   0          4m
+openobserve-querier-0                      1/1     Running   0          5m
+openobserve-router-7d4f6c8b5-j3m2n         1/1     Running   0          5m
+openobserve-scheduler-0                    1/1     Running   0          5m
+openobserve-nats-0                                     1/1     Running   0          5m
+openobserve-nats-1                                     1/1     Running   0          5m
+openobserve-nats-2                                     1/1     Running   0          5m
 ```
 
 Входим с credentials из `auth.*` — и видим пустой (пока) домашний дашборд. Платформа готова принимать данные.
@@ -270,7 +261,6 @@ o2-nats-2                                     1/1     Running   0          5m
 
 ### Требования
 
-- cert-manager (уже есть)
 - OpenTelemetry Operator:
 
 ```bash
@@ -279,21 +269,21 @@ kubectl apply -f https://github.com/open-telemetry/opentelemetry-operator/releas
 
 ### values-файл коллектора
 
-Файл `collector-values.yaml`. Authorization-заголовок — Basic из credentials OpenObserve (тот же root email/password; в CI/CD можно вычислить: `printf '%s:%s' "$EMAIL" "$PASS" | base64`):
+Файл `collector-values.yaml` генерируется Terraform'ом из шаблона `collector-values.yaml.tftpl` — Authorization-заголовок (Basic из credentials OpenObserve: `printf '%s:%s' "$EMAIL" "$PASS" | base64`) подставляется автоматически. Ручной вариант:
 
 ```yaml
 exporters:
   otlphttp/openobserve:
-    endpoint: http://o2-openobserve-router.openobserve.svc.cluster.local:5080/api/default/
+    endpoint: http://openobserve-router.openobserve.svc.cluster.local:5080/api/default/
     headers:
       Authorization: Basic cm9vdEBleGFtcGxlLmNvbTpDb21wbGV4cGFzcyMxMjM=
   otlphttp/openobserve_k8s_events:
-    endpoint: http://o2-openobserve-router.openobserve.svc.cluster.local:5080/api/default/
+    endpoint: http://openobserve-router.openobserve.svc.cluster.local:5080/api/default/
     headers:
       Authorization: Basic cm9vdEBleGFtcGxlLmNvbTpDb21wbGV4cGFzcyMxMjM=
       stream-name: k8s_events
 
-k8sCluster: "my-cluster"
+k8sCluster: "openobserve"
 
 autoinstrumentation:
   enabled: false
@@ -309,16 +299,16 @@ kube-state-metrics:
 ```yaml
 exporters:
   otlphttp/openobserve:
-    endpoint: http://o2-openobserve-router.openobserve.svc.cluster.local:5080/api/default/
+    endpoint: http://openobserve-router.openobserve.svc.cluster.local:5080/api/default/
     headers:
       Authorization: Basic cm9vdEBleGFtcGxlLmNvbTpDb21wbGV4cGFzcyMxMjM=
   otlphttp/openobserve_k8s_events:
-    endpoint: http://o2-openobserve-router.openobserve.svc.cluster.local:5080/api/default/
+    endpoint: http://openobserve-router.openobserve.svc.cluster.local:5080/api/default/
     headers:
       Authorization: Basic cm9vdEBleGFtcGxlLmNvbTpDb21wbGV4cGFzcyMxMjM=
       stream-name: k8s_events
 
-k8sCluster: "my-cluster"
+k8sCluster: "openobserve"
 
 autoinstrumentation:
   enabled: false
@@ -414,7 +404,7 @@ gateway:
 
 ```bash
 kubectl create namespace openobserve-collector
-helm upgrade --install o2c openobserve/openobserve-collector \
+helm upgrade --install openobserve-collector openobserve/openobserve-collector \
   -n openobserve-collector -f collector-values.yaml
 ```
 
@@ -483,7 +473,7 @@ extraEnv:
   - name: ZO_S3_SECRET_KEY
     valueFrom:
       secretKeyRef:
-        name: o2-s3-credentials
+        name: openobserve-s3-credentials
         key: secret_key
 ```
 
@@ -506,8 +496,8 @@ autoscaling:
 
 ```bash
 helm repo update openobserve
-helm upgrade o2 openobserve/openobserve -n openobserve -f values.yaml
-helm upgrade o2c openobserve/openobserve-collector \
+helm upgrade openobserve openobserve/openobserve -n openobserve -f values.yaml
+helm upgrade openobserve-collector openobserve/openobserve-collector \
   -n openobserve-collector -f collector-values.yaml
 ```
 
@@ -516,8 +506,8 @@ helm upgrade o2c openobserve/openobserve-collector \
 ### Удаление
 
 ```bash
-helm uninstall o2c -n openobserve-collector
-helm uninstall o2 -n openobserve
+helm uninstall openobserve-collector -n openobserve-collector
+helm uninstall openobserve -n openobserve
 kubectl delete namespace openobserve-collector openobserve
 # Данные в Object Storage останутся — удалите бакет отдельно, если нужно
 ```
@@ -527,8 +517,8 @@ kubectl delete namespace openobserve-collector openobserve
 ### 1. Под ingester'а не стартует / CrashLoopBackOff
 
 ```bash
-kubectl logs -n openobserve o2-openobserve-ingester-0 --previous
-kubectl describe pod -n openobserve o2-openobserve-ingester-0
+kubectl logs -n openobserve openobserve-ingester-0 --previous
+kubectl describe pod -n openobserve openobserve-ingester-0
 ```
 
 Частая причина — недоступность S3: проверьте креды, имя бакета и эндпоинт `https://storage.yandexcloud.net`.
@@ -539,28 +529,18 @@ kubectl describe pod -n openobserve o2-openobserve-ingester-0
 - Куда шлёт? `kubectl logs -n openobserve-collector <gateway-pod> | grep -i error`
 - Авторизация: заголовок `Authorization` в exporter'ах — валидный Basic из credentials OpenObserve
 
-### 3. TLS-сертификат не выпускается
-
-```bash
-kubectl get certificate -n openobserve
-kubectl describe certificate o2-tls -n openobserve
-kubectl get challenges -A
-```
-
-ACME HTTP-01 требует времени (1–5 минут); проверьте, что домен резолвится в IP ingress-контроллера: `dig o2.51-250-10-20.sslip.io +short`.
-
-### 4. Collector-шробы падают с connection refused
+### 3. Collector-шробы падают с connection refused
 
 Если оставили дефолтные scrape-jobs на managed-кластере — это kube-scheduler и kube-controller-manager. Control-plane Yandex Managed K8s вне кластера и не скрейпится: уберите эти job'ы (см. values выше).
 
-### 5. Постоянно растёт расход S3
+### 4. Постоянно растёт расход S3
 
 Retention. По умолчанию данные не удаляются никогда — задайте `ZO_COMPACT_DATA_RETENTION_DAYS`. Также проверьте, что компактор жив: он же и занимается удалением.
 
 ## Безопасность
 
 - **Данные не покидают ваш периметр** — self-hosted, S3 ваш, телеметрию можно отключить (`ZO_TELEMETRY: "false"`)
-- **TLS everywhere** — ingress от cert-manager, S3-эндпоинт по HTTPS
+- **S3-эндпоинт по HTTPS**; TLS на ingress при необходимости добавляется cert-manager'ом (в этой конфигурации не используется)
 - **/metrics закрыты от публики** — чарт ставит nginx-сайдкар blocked-metrics, отдающий 403 на `/metrics` и `/api/metrics`
 - **Секреты** — у чарта режим existing Secret вместо plaintext-credentials в values
 - **OSS vs Enterprise** — SSO (OIDC/SAML/LDAP), гранулярный RBAC и audit trail доступны в Enterprise-редакции; OSS-аутентификация — пользователи OpenObserve с ролями

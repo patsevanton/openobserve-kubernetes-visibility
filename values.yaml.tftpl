@@ -1,0 +1,47 @@
+auth:
+  ZO_ROOT_USER_EMAIL: "${openobserve_root_user_email}"
+  ZO_ROOT_USER_PASSWORD: "${openobserve_root_user_password}"
+  # Static access key Yandex Object Storage (создаётся terraform'ом, см. openobserve.tf)
+  ZO_S3_ACCESS_KEY: "${openobserve_s3_access_key}"
+  ZO_S3_SECRET_KEY: "${openobserve_s3_secret_key}"
+
+config:
+  ZO_S3_PROVIDER: "s3"
+  ZO_S3_SERVER_URL: "https://storage.yandexcloud.net"
+  ZO_S3_REGION_NAME: "ru-central1"
+  ZO_S3_BUCKET_NAME: "${openobserve_s3_bucket_name}"
+  ZO_COMPACT_DATA_RETENTION_DAYS: "30"
+  ZO_TELEMETRY: "false"
+
+# OSS-образ вместо enterprise (enterprise-фичи не используются)
+enterprise:
+  enabled: false
+
+# Генерация отчётов в PDF — не нужна в базовом сценарии
+reportserver:
+  enabled: false
+
+# Уменьшенные PVC для демо; в проде оставьте 100Gi по умолчанию
+ingester:
+  persistence:
+    enabled: true
+    size: 20Gi
+
+querier:
+  persistence:
+    enabled: true
+    size: 20Gi
+
+scheduler:
+  persistence:
+    enabled: true
+    size: 10Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: ${openobserve_fqdn}
+      paths:
+        - path: /
+          pathType: Prefix
