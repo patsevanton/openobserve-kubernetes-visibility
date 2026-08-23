@@ -118,7 +118,7 @@ helm search repo openobserve --versions
 
 ### Шаг 4. values-файл и Secret
 
-Файлы `values.yaml` и `secret.yaml` генерируются Terraform'ом из шаблонов `values.yaml.tftpl` и `secret.yaml.tftpl` (домен, креды root-пользователя и static access key S3 подставляются автоматически). Секреты в values не попадают: чарт подключает их из внешнего Secret `openobserve-secrets` через `externalSecret.*`.
+Файлы `values.yaml` и `secret.yaml` генерируются Terraform'ом из шаблонов `values.yaml.tftpl` и `secret.yaml.tftpl` (домен и креды подставляются автоматически). Секреты в values не попадают — подробности в разделе «Секреты: креды не живут в values».
 
 `values.yaml` (без секретов):
 
