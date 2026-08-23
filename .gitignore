@@ -42,3 +42,10 @@ terraform.rc
 # Optional: ignore plan files saved before destroying Terraform configuration
 # Uncomment the line below if you want to ignore planout files.
 # planout
+o2.tar.gz
+openobserve
+data/openobserve/db/metadata.sqlite
+data/openobserve/db/metadata.sqlite-shm
+data/openobserve/db/metadata.sqlite-wal
+data/openobserve/mmdb/GeoLite2-ASN.mmdb
+data/openobserve/mmdb/GeoLite2-City.mmdb
