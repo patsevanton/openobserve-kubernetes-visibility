@@ -76,7 +76,7 @@ flowchart LR
 
 ### Шаг 1. Бакет в Yandex Object Storage
 
-Создайте S3-бакет. Имя бакета и креды поместите `values.yaml` (`ZO_S3_BUCKET_NAME`, `ZO_S3_ACCESS_KEY`, `ZO_S3_SECRET_KEY`). Хранить данные Observability в объектном хранилище — и есть главный источник экономии: холодные Parquet-файлы не занимают ни PV, ни RAM.
+Создайте S3-бакет. Имя бакета попадает в `values.yaml` (`ZO_S3_BUCKET_NAME`), а креды static access key — в Secret `openobserve-secrets` (`ZO_S3_ACCESS_KEY`, `ZO_S3_SECRET_KEY`). Хранить данные Observability в объектном хранилище — и есть главный источник экономии: холодные Parquet-файлы не занимают ни PV, ни RAM.
 
 ### Шаг 2. Postgres: Yandex Managed Service for PostgreSQL
 
@@ -84,17 +84,17 @@ flowchart LR
 
 Создайте PostgreSQL 17 кластер из 3 хостов (primary + 2 реплики, по одной в каждой зоне отказоустойчивости), пользователь `openobserve` и база `app`.
 
-Как OpenObserve подключается к БД: в `values.yaml` отключаем встроенный Postgres чарта и задаём DSN напрямую:
+Как OpenObserve подключается к БД: отключаем встроенный Postgres чарта, DSN кладём не в values, а в Secret `openobserve-secrets` (см. Шаг 4):
 
 ```yaml
 postgres:
   enabled: false
+```
 
-auth:
-  # Special FQDN Managed PostgreSQL: .rw — текущий master (запись),
-  # .ro — самая свежая replica (чтение); порт 6432
-  ZO_META_POSTGRES_DSN: "postgres://openobserve:***@c-<cluster_id>.rw.mdb.yandexcloud.net:6432/app?sslmode=disable"
-  ZO_META_POSTGRES_RO_DSN: "postgres://openobserve:***@c-<cluster_id>.ro.mdb.yandexcloud.net:6432/app?sslmode=disable"
+```yaml
+# Secret openobserve-secrets, ключи:
+#   ZO_META_POSTGRES_DSN: "postgres://openobserve:***@c-<cluster_id>.rw.mdb.yandexcloud.net:6432/app?sslmode=disable"
+#   ZO_META_POSTGRES_RO_DSN: "postgres://openobserve:***@c-<cluster_id>.ro.mdb.yandexcloud.net:6432/app?sslmode=disable"
 ```
 
 Из нестандартного здесь:
@@ -116,20 +116,27 @@ helm repo update
 helm search repo openobserve --versions
 ```
 
-### Шаг 4. values-файл
+### Шаг 4. values-файл и Secret
 
-Файл `values.yaml` генерируется Terraform'ом из шаблона `values.yaml.tftpl` (домен, креды root-пользователя и static access key S3 подставляются автоматически):
+Файлы `values.yaml` и `secret.yaml` генерируются Terraform'ом из шаблонов `values.yaml.tftpl` и `secret.yaml.tftpl` (домен, креды root-пользователя и static access key S3 подставляются автоматически). Секреты в values не попадают: чарт подключает их из внешнего Secret `openobserve-secrets` через `externalSecret.*`.
+
+`values.yaml` (без секретов):
 
 ```yaml
+# Секреты чарт берёт из внешнего Secret openobserve-secrets через envFrom secretRef
+externalSecret:
+  enabled: true
+  name: "openobserve-secrets"
+
+# Зануляем креды, чтобы дефолтные значения чарта не оставались в кластере
 auth:
-  ZO_ROOT_USER_EMAIL: "root@example.com"
-  ZO_ROOT_USER_PASSWORD: "Complexpass#123"
-  # Static access key Yandex Object Storage
-  ZO_S3_ACCESS_KEY: "YCAJExxxxxxxxxxxxxxxxxxxx"
-  ZO_S3_SECRET_KEY: "YCPxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  # Managed PostgreSQL: special FQDN .rw (master) и .ro (replica), порт 6432
-  ZO_META_POSTGRES_DSN: "postgres://openobserve:***@c-c9abc123def456.mdb.yandexcloud.net:6432/app?sslmode=disable"
-  ZO_META_POSTGRES_RO_DSN: "postgres://openobserve:***@c-c9abc123def456.mdb.yandexcloud.net:6432/app?sslmode=disable"
+  ZO_ROOT_USER_EMAIL: ""
+  ZO_ROOT_USER_PASSWORD: ""
+  ZO_ROOT_USER_TOKEN: ""
+  ZO_S3_ACCESS_KEY: ""
+  ZO_S3_SECRET_KEY: ""
+  ZO_META_POSTGRES_DSN: ""
+  ZO_META_POSTGRES_RO_DSN: ""
 
 config:
   ZO_S3_PROVIDER: "s3"
@@ -177,6 +184,27 @@ ingress:
           pathType: Prefix
 ```
 
+`secret.yaml` (создаётся в namespace `openobserve`, применить до `helm install`):
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openobserve-secrets
+  namespace: openobserve
+type: Opaque
+stringData:
+  # Root-пользователь OpenObserve (вход в UI)
+  ZO_ROOT_USER_EMAIL: "root@example.com"
+  ZO_ROOT_USER_PASSWORD: "***"
+  # Static access key Yandex Object Storage
+  ZO_S3_ACCESS_KEY: "YCAJExxxxxxxxxxxxxxxxxxxx"
+  ZO_S3_SECRET_KEY: "YCPxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  # Managed PostgreSQL: special FQDN .rw (master) и .ro (replica), порт 6432
+  ZO_META_POSTGRES_DSN: "postgres://openobserve:***@c-c9abc123def456.mdb.yandexcloud.net:6432/app?sslmode=disable"
+  ZO_META_POSTGRES_RO_DSN: "postgres://openobserve:***@c-c9abc123def456.mdb.yandexcloud.net:6432/app?sslmode=disable"
+```
+
 Из нестандартного здесь:
 
 - `ZO_S3_*` — S3-эндпоинт и креды Yandex Object Storage. Провайдер `s3` — стандартный AWS-совместимый путь: Yandex Object Storage говорит по S3 API, отдельного `minio`-режима не требуется
@@ -192,6 +220,8 @@ ingress:
 
 ```bash
 kubectl create namespace openobserve
+# Secret должен существовать до helm install: чарт подключает его через externalSecret
+kubectl apply -f secret.yaml
 helm upgrade --install openobserve openobserve/openobserve --version 0.92.2 \
   -n openobserve -f values.yaml
 ```
@@ -224,7 +254,7 @@ openobserve-nats-2                                     1/1     Running   0      
 
 Подов Postgres в namespace нет — кластер БД живёт отдельно в Yandex Managed Service for PostgreSQL (проверить: `yc managed-postgresql cluster list`).
 
-Входим с credentials из `auth.*` — и видим пустой (пока) домашний дашборд. Платформа готова принимать данные.
+Входим с credentials root-пользователя из Secret (`ZO_ROOT_USER_EMAIL`/`ZO_ROOT_USER_PASSWORD` ключи `openobserve-secrets`) — и видим пустой (пока) домашний дашборд. Платформа готова принимать данные.
 
 ## Часть 3. Коллектор: кластер наблюдает сам за собой
 
@@ -433,26 +463,22 @@ Real User Monitoring: Core Web Vitals, ошибки фронтенда, полн
 
 Трекинг LLM-приложений: стоимость, токены, латентность, error rate по моделям, agent-графы, session-трейсы, оценка качества ответов.
 
-## Секреты: как не зашить креды в values
+## Секреты: креды не живут в values
 
-Креды в values.yaml — для демо. В продакшене используйте existing Secret (`externalSecret.*`) или `extraEnv` с `secretKeyRef`:
+Секреты сервера (root-пользователь, static access key S3, DSN Postgres) хранятся **только** в Kubernetes Secret `openobserve-secrets` — Terraform рендерит его манифест в `secret.yaml` (файл в `.gitignore`), values подключает через `externalSecret.*`, и все поды получают переменные окружения через `envFrom: secretRef`. В Helm-release и git секретов нет.
 
-```yaml
-externalSecret:
-  enabled: true
-  name: "openobserve-secrets"  # Secret с ZO_ROOT_USER_*, ZO_S3_ACCESS_KEY, ZO_S3_SECRET_KEY
-```
-
-Или через extraEnv:
+Вариант с точечной подстановкой — `extraEnv` с `secretKeyRef` (если не хотите отдавать весь Secret целиком):
 
 ```yaml
 extraEnv:
   - name: ZO_S3_SECRET_KEY
     valueFrom:
       secretKeyRef:
-        name: openobserve-s3-credentials
-        key: secret_key
+        name: openobserve-secrets
+        key: ZO_S3_SECRET_KEY
 ```
+
+Особняком стоит коллектор: чарт `openobserve-collector` (на момент версии 0.4.6) не умеет внешние Secret — Basic-заголовок Authorization задаётся в values и попадает в CR `OpenTelemetryCollector` и Helm-release secret. Сгенерированный `collector-values.yaml` не коммитится (в `.gitignore`), но в кластере заголовок остаётся виден в CR и в объектах Helm. Обновляйте пароль root-пользователя с оглядкой на это (после смены пароля заголовок надо перегенерировать и сделать `helm upgrade` коллектора).
 
 ## Масштабирование и обновление
 
@@ -473,6 +499,9 @@ autoscaling:
 
 ```bash
 helm repo update openobserve
+# После смены секретов (пароль root, ключ S3, DSN) — сначала terraform apply
+# (перегенерирует secret.yaml), затем kubectl apply и helm upgrade
+kubectl apply -f secret.yaml
 helm upgrade openobserve openobserve/openobserve -n openobserve -f values.yaml
 helm upgrade openobserve-collector openobserve/openobserve-collector \
   -n openobserve-collector -f collector-values.yaml
@@ -506,6 +535,7 @@ kubectl describe pod -n openobserve openobserve-ingester-0
 - Коллектор живёт? `kubectl get pods -n openobserve-collector`
 - Куда шлёт? `kubectl logs -n openobserve-collector <gateway-pod> | grep -i error`
 - Авторизация: заголовок `Authorization` в exporter'ах — валидный Basic из credentials OpenObserve
+- Сервер видит креды? `kubectl exec -n openobserve deploy/openobserve-router -- env | grep ZO_ROOT_USER` — переменные должны приходить из Secret `openobserve-secrets`
 
 ### 3. Collector-шробы падают с connection refused
 
@@ -520,7 +550,7 @@ Retention. По умолчанию данные не удаляются нико
 - **Данные не покидают ваш периметр** — self-hosted, S3 ваш, телеметрию можно отключить (`ZO_TELEMETRY: "false"`)
 - **S3-эндпоинт по HTTPS**; TLS на ingress при необходимости добавляется cert-manager'ом (в этой конфигурации не используется)
 - **/metrics закрыты от публики** — чарт ставит nginx-сайдкар blocked-metrics, отдающий 403 на `/metrics` и `/api/metrics`
-- **Секреты** — у чарта режим existing Secret вместо plaintext-credentials в values
+- **Секреты** — креды сервера живут только в Kubernetes Secret `openobserve-secrets` (не в values, не в git, не в Helm-release); исключение — Basic-заголовок коллектора (см. раздел «Секреты»)
 - **OSS vs Enterprise** — SSO (OIDC/SAML/LDAP), гранулярный RBAC и audit trail доступны в Enterprise-редакции; OSS-аутентификация — пользователи OpenObserve с ролями
 - **Лицензия** — AGPL-3.0: бесплатна для коммерческого использования, но модификации OpenObserve обязаны оставаться открытыми
 

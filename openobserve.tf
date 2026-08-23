@@ -48,13 +48,18 @@ resource "yandex_storage_bucket" "openobserve" {
 }
 
 locals {
+  # Секреты в values не попадают: чарт подключает их из внешнего Secret
+  # openobserve-secrets (externalSecret.*), манифест рендерится в secret.yaml
   openobserve_values = templatefile("${path.module}/values.yaml.tftpl", {
-    openobserve_fqdn               = local.openobserve_fqdn
+    openobserve_fqdn           = local.openobserve_fqdn
+    openobserve_s3_bucket_name = var.openobserve_s3_bucket_name
+  })
+
+  openobserve_secret = templatefile("${path.module}/secret.yaml.tftpl", {
     openobserve_root_user_email    = var.openobserve_root_user_email
     openobserve_root_user_password = var.openobserve_root_user_password
     openobserve_s3_access_key      = yandex_iam_service_account_static_access_key.sa_s3_key.access_key
     openobserve_s3_secret_key      = yandex_iam_service_account_static_access_key.sa_s3_key.secret_key
-    openobserve_s3_bucket_name     = var.openobserve_s3_bucket_name
     openobserve_postgres_dsn       = local.postgres_dsn
     openobserve_postgres_ro_dsn    = local.postgres_ro_dsn
   })
@@ -64,4 +69,10 @@ resource "local_file" "write_openobserve_values" {
   content         = local.openobserve_values
   filename        = "${path.module}/values.yaml"
   file_permission = "0644"
+}
+
+resource "local_file" "write_openobserve_secret" {
+  content         = local.openobserve_secret
+  filename        = "${path.module}/secret.yaml"
+  file_permission = "0600"
 }

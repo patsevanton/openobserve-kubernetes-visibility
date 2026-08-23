@@ -51,7 +51,8 @@ data/openobserve/db/metadata.sqlite-wal
 data/openobserve/mmdb/GeoLite2-ASN.mmdb
 data/openobserve/mmdb/GeoLite2-City.mmdb
 
-# Values генерируются из *.tftpl через terraform (openobserve.tf, collector.tf);
-# в них попадают креды S3 и Basic-заголовок OpenObserve
+# Values и Secret генерируются из *.tftpl через terraform (openobserve.tf, collector.tf);
+# в values попадает Basic-заголовок OpenObserve, в secret.yaml — пароли и ключи S3
 values.yaml
 collector-values.yaml
+secret.yaml
